@@ -33,6 +33,7 @@ from Products.Five.browser import BrowserView
 from Products.GenericSetup.context import DirectoryImportContext
 from Products.GenericSetup.utils import importObjects
 from z3c.relationfield import RelationValue
+from z3c.relationfield.schema import RelationList, RelationChoice
 from zc.relation.interfaces import ICatalog
 from zope.annotation.interfaces import IAnnotations
 from zope.component import getGlobalSiteManager
@@ -318,10 +319,15 @@ def get_all_references(context):
     reference_catalog = getToolByName(context, REFERENCE_CATALOG, None)
     if reference_catalog is not None:
         for brain in catalog_get_all(reference_catalog):
+
+            obj = brain.getObject()
+            field = getattr(obj, 'field', None)
+
             results.append({
                 'from_uuid': brain.sourceUID,
                 'to_uuid': brain.targetUID,
                 'relationship': brain.relationship,
+                'field': field,
             })
 
     # Dexterity
@@ -330,13 +336,15 @@ def get_all_references(context):
     relation_catalog = queryUtility(ICatalog)
     for rel in relation_catalog.findRelations():
         if rel.from_path and rel.to_path:
-            from_brain = portal_catalog(path=dict(query=rel.from_path, depth=0))
+            from_brain = portal_catalog(
+                path=dict(query=rel.from_path, depth=0))
             to_brain = portal_catalog(path=dict(query=rel.to_path, depth=0))
             if len(from_brain) > 0 and len(to_brain) > 0:
                 results.append({
                     'from_uuid': from_brain[0].UID,
                     'to_uuid': to_brain[0].UID,
                     'relationship': rel.from_attribute,
+                    'field': None,
                 })
     return results
 
@@ -348,13 +356,17 @@ def restore_references(context):
     the content-types framework.
     """
     key = 'ALL_REFERENCES'
-    for ref in IAnnotations(context)[key]:
+    count = 0
+    refs = IAnnotations(context)[key]
+    total = len(refs)
+
+    for ref in refs:
         source_obj = uuidToObject(ref['from_uuid'])
         target_obj = uuidToObject(ref['to_uuid'])
-        relationship = ref['relationship']
         if source_obj and target_obj:
             relationship = ref['relationship']
-            link_items(context, source_obj, target_obj, relationship)
+            field = ref['field']
+            link_items(context, source_obj, target_obj, relationship, field)
         else:
             logger.warn(
                 'Could not restore reference from uid '
@@ -364,6 +376,9 @@ def restore_references(context):
                     '/'.join(context.getPhysicalPath())
                 )
             )
+        count += 1
+        if count % 50 == 0:
+            logger.info('Restored {} references from {}'.format(count, total))
     del IAnnotations(context)[key]
 
 
@@ -385,6 +400,9 @@ def link_items(  # noqa
     # plone.app.referenceablebehavior.referenceable.IReferenceable
     drop_msg = """Dropping reference from %s to %s since
     plone.app.referenceablebehavior is not enabled!"""
+
+    if not fieldname:
+        fieldname = 'relatedItems'
 
     if source_obj is target_obj:
         # Thou shalt not relate to yourself.
@@ -490,16 +508,62 @@ def link_items(  # noqa
         # handle dx-relation
         intids = getUtility(IIntIds)
         to_id = intids.getId(target_obj)
-        existing_dx_relations = getattr(source_obj, fieldname, [])
+
+        if not fieldname == 'relatedItems':
+            # get field by fieldname and check if it exist in DX
+            schema = source_obj.getTypeInfo().lookupSchema()
+            field = schema.get(fieldname)
+
+            # if field exist try to save in it
+            # otherwise save it into relatedItems
+            if field:
+                # if field exist get existing relations
+                existing_dx_relations = get_existing_dx_relations(source_obj,
+                                                                  fieldname)
+                # define type of relation RelationList or RelationChoice
+                if isinstance(field, RelationList):
+                    if to_id not in [i.to_id for i in existing_dx_relations]:
+                        existing_dx_relations.append(RelationValue(to_id))
+                elif isinstance(field, RelationChoice):
+                    if existing_dx_relations:
+                        logger.error('RelationChoice {} already has value, \
+                                      so next value will be saved as \
+                                      relatedItems'.format(fieldname))
+                        fieldname = 'relatedItems'
+                    else:
+                        existing_dx_relations = RelationValue(to_id)
+                else:
+                    logger.error('Unknown type of raltion {}'.format(
+                        type(field)))
+                    return
+            else:
+                fieldname = 'relatedItems'
+
+        if fieldname == 'relatedItems':
+            # get existing relations for relatedItems
+            existing_dx_relations = get_existing_dx_relations(source_obj,
+                                                              fieldname)
+            if to_id not in [i.to_id for i in existing_dx_relations]:
+                    existing_dx_relations.append(RelationValue(to_id))
+
+        setattr(source_obj, fieldname, existing_dx_relations)
+        modified(source_obj)
+        return
+
+
+def get_existing_dx_relations(obj, fieldname):
+    existing_dx_relations = getattr(obj, fieldname, [])
+
+    # get existing relations
+    if not existing_dx_relations:
+        existing_dx_relations = []
+    else:
         # purge broken relations
         existing_dx_relations = [
-            i for i in existing_dx_relations if i.to_id is not None]
-
-        if to_id not in [i.to_id for i in existing_dx_relations]:
-            existing_dx_relations.append(RelationValue(to_id))
-            setattr(source_obj, fieldname, existing_dx_relations)
-            modified(source_obj)
-            return
+            i for i in existing_dx_relations
+            if getattr(i, 'to_id', None) and i.to_id is not None
+        ]
+    return existing_dx_relations
 
 
 def is_referenceable(obj):
