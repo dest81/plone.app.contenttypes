@@ -181,9 +181,11 @@ class ATCTFolderMigrator(CMFFolderMigrator):
         migrate_leadimage(self.old, self.new)
 
     def migrate_nextprevious(self):
-        if self.old.getNextPreviousEnabled():
+        if getattr(self.old, 'nextPreviousEnabled', None):
             if INextPreviousToggle.providedBy(self.new):
                 self.new.nextPreviousEnabled = True
+        else:
+            logging.info("nextPreviousEnabled is not active for this object")
 
     def last_migrate_comments(self):
         """Migrate the plone.app.discussion comments.
@@ -200,6 +202,7 @@ class ATCTFolderMigrator(CMFFolderMigrator):
         migrate_properties.
         """
         old_layout = self.old.getLayout() or getattr(self.old, 'layout', None)
+
         if old_layout in LISTING_VIEW_MAPPING.keys():
             default_page = self.old.getDefaultPage() or \
                 getattr(self.old, 'default_page', None)
