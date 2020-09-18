@@ -34,6 +34,8 @@ from Products.Five.browser import BrowserView
 from Products.GenericSetup.context import DirectoryImportContext
 from Products.GenericSetup.utils import importObjects
 from z3c.relationfield import RelationValue
+from z3c.relationfield.schema import RelationList, RelationChoice
+
 from zc.relation.interfaces import ICatalog
 from zExceptions import NotFound
 from zope.annotation.interfaces import IAnnotations
@@ -307,10 +309,13 @@ def get_all_references(context):
     reference_catalog = getToolByName(context, REFERENCE_CATALOG, None)
     if reference_catalog is not None:
         for brain in reference_catalog.getAllBrains():
+            obj = brain.getObject()
+            field = getattr(obj, 'field', None)
             results.append({
                 'from_uuid': brain.sourceUID,
                 'to_uuid': brain.targetUID,
                 'relationship': brain.relationship,
+                'field': field,
             })
 
     # Dexterity
@@ -327,6 +332,7 @@ def get_all_references(context):
                     'from_uuid': from_brain[0].UID,
                     'to_uuid': to_brain[0].UID,
                     'relationship': rel.from_attribute,
+                    'field': None,
                 })
     return results
 
@@ -339,6 +345,7 @@ def restore_references(context):
     """
     key = 'ALL_REFERENCES'
     all_references = IAnnotations(context)[key]
+
     logger.info('Restoring {0} relations.'.format(
         len(all_references))
     )
@@ -348,7 +355,8 @@ def restore_references(context):
         relationship = ref['relationship']
         if source_obj and target_obj:
             relationship = ref['relationship']
-            link_items(context, source_obj, target_obj, relationship)
+            field = ref['field']
+            link_items(context, source_obj, target_obj, relationship, field)
         else:
             logger.warn(
                 'Could not restore reference from uid '
@@ -387,6 +395,8 @@ def link_items(  # noqa
         # Thou shalt not relate to yourself.
         return
 
+    if not fieldname:
+        return
     # if fieldname != 'relatedItems':
         # 'relatedItems' is the default field for AT and DX
         # See plone.app.relationfield.behavior.IRelatedItems for DX and
@@ -491,7 +501,12 @@ def link_items(  # noqa
 
         intids = getUtility(IIntIds)
         to_id = intids.getId(target_obj)
+
         existing_dx_relations = getattr(source_obj, fieldname, [])
+
+        if not existing_dx_relations:
+            return
+
         # purge broken relations
         existing_dx_relations = [
             i for i in existing_dx_relations if i.to_id is not None]
