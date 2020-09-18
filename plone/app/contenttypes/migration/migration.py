@@ -521,6 +521,7 @@ def migrateCustomAT(fields_mapping,
                 logger.error(
                     '%s should not be dexterity object!',
                     src_obj.absolute_url())
+                return
             is_folderish = getattr(src_obj, 'isPrincipiaFolderish', False)
             src_meta_type = src_obj.meta_type
     else:
