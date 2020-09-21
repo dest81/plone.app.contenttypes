@@ -489,8 +489,8 @@ def link_items(  # noqa
         modified(source_obj)
         return
 
-    if source_type is 'DX':
-        if target_type is 'AT' and not is_referenceable(source_obj):
+    if source_type == 'DX':
+        if target_type == 'AT' and not is_referenceable(source_obj):
             logger.info(drop_msg % (
                 source_obj.absolute_url(), target_obj.absolute_url()))
             return
@@ -502,9 +502,25 @@ def link_items(  # noqa
         intids = getUtility(IIntIds)
         to_id = intids.getId(target_obj)
 
-        existing_dx_relations = getattr(source_obj, fieldname, [])
+        existing_dx_relations = getattr(source_obj, fieldname, []) or []
 
-        if not existing_dx_relations:
+        if not isinstance(existing_dx_relations, list):
+            existing_dx_relations = [existing_dx_relations]
+
+        # check if field is RelationChoice
+        schema = source_obj.getTypeInfo().lookupSchema()
+        field = schema.get(fieldname)
+        if isinstance(field, RelationChoice):
+            setattr(source_obj, fieldname, RelationValue(to_id))
+            modified(source_obj)
+
+            if existing_dx_relations:
+                # RelationChoice can't have list of values
+                # at this point existing_dx_relations shouldn't exist
+                # moving all existing relations to relatedItems
+                logger.error("RelationChoice {} already has a value!!!\
+                        This shouldn't have happened \
+                        Last one will be set".format(fieldname))
             return
 
         # purge broken relations
